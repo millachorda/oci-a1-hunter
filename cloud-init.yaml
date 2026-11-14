@@ -1,0 +1,33 @@
+#cloud-config
+# Minimal first-boot setup. Everything here is repeated idempotently by server-setup.sh,
+# which does the full Minecraft install (run it over ssh after copying the server files).
+# cloud-init apt/debconf docs: https://cloudinit.readthedocs.io/en/latest/reference/modules.html#apt-configure
+package_update: true
+package_upgrade: false
+
+apt:
+  debconf_selections:
+    iptables: |
+      iptables-persistent iptables-persistent/autosave_v4 boolean true
+      iptables-persistent iptables-persistent/autosave_v6 boolean true
+
+packages:
+  - openjdk-21-jre-headless
+  - iptables-persistent
+  - netfilter-persistent
+
+runcmd:
+  # Oracle's Ubuntu images ship an INPUT chain ending in "REJECT ... icmp-host-prohibited".
+  # Insert the Minecraft rule BEFORE that REJECT, only if not already present, then persist.
+  # https://docs.oracle.com/en-us/iaas/Content/Compute/References/images.htm ("default set of firewall
+  # rules that allow only SSH"; do NOT use ufw on Oracle Ubuntu images, it can break boot).
+  - |
+    if ! iptables -C INPUT -p tcp -m state --state NEW --dport 25565 -j ACCEPT 2>/dev/null; then
+      n=$(iptables -L INPUT --line-numbers -n | awk '$2=="REJECT"{print $1; exit}')
+      if [ -n "$n" ]; then
+        iptables -I INPUT "$n" -p tcp -m state --state NEW --dport 25565 -j ACCEPT
+      else
+        iptables -A INPUT -p tcp -m state --state NEW --dport 25565 -j ACCEPT
+      fi
+      netfilter-persistent save
+    fi

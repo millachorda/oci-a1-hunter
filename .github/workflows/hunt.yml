@@ -1,0 +1,109 @@
+name: hunt-a1
+
+# Retries creating an Oracle Always Free A1 VM every ~3 minutes, around the clock.
+# Each run loops for up to ~5h45m; an hourly schedule queues the next run so there are no gaps.
+# On success: notifies by email (issue + OCI Notifications) and deletes this whole repository.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: hunt-a1
+  cancel-in-progress: false
+
+env:
+  SUPPRESS_LABEL_WARNING: "True"
+  PYTHONWARNINGS: ignore
+  OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
+  NAME: minecraft-a1
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: py
+        with:
+          python-version: "3.12"
+      - name: Cache OCI CLI venv
+        id: venv-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/ocivenv
+          key: ocivenv-${{ runner.os }}-${{ steps.py.outputs.python-version }}-v1
+      - name: Install OCI CLI
+        if: steps.venv-cache.outputs.cache-hit != 'true'
+        run: python -m venv ~/ocivenv && ~/ocivenv/bin/pip install --quiet oci-cli
+      - name: Configure OCI
+        env:
+          OCI_KEY: ${{ secrets.OCI_API_KEY }}
+          OCI_USER: ${{ secrets.OCI_USER }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_TENANCY: ${{ secrets.OCI_TENANCY }}
+        run: |
+          echo "$HOME/ocivenv/bin" >> "$GITHUB_PATH"
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_KEY" > ~/.oci/key.pem
+          chmod 600 ~/.oci/key.pem
+          printf '[DEFAULT]\nuser=%s\nfingerprint=%s\ntenancy=%s\nregion=eu-madrid-1\nkey_file=%s\n' \
+            "$OCI_USER" "$OCI_FINGERPRINT" "$OCI_TENANCY" "$HOME/.oci/key.pem" > ~/.oci/config
+          chmod 600 ~/.oci/config
+      - name: Hunt (loop ~5h45m)
+        id: hunt
+        env:
+          TENANCY: ${{ secrets.OCI_TENANCY }}
+          AD: ${{ secrets.OCI_AD }}
+          SUBNET: ${{ secrets.OCI_SUBNET }}
+          IMAGE: ${{ secrets.OCI_IMAGE }}
+        run: |
+          set -u
+          echo '{"ocpus":2,"memoryInGBs":12}' > shape.json
+          end=$(( $(date +%s) + 345*60 ))
+          n=0
+          while [ "$(date +%s)" -lt "$end" ]; do
+            n=$((n+1))
+            existing=$(oci compute instance list --compartment-id "$TENANCY" --display-name "$NAME" --all \
+              --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id | [0]" --raw-output 2>/dev/null || true)
+            if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+              echo "Attempt $n: A1 instance exists."
+              echo "done=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            out=$(oci compute instance launch --availability-domain "$AD" --compartment-id "$TENANCY" \
+              --display-name "$NAME" --shape VM.Standard.A1.Flex --shape-config file://shape.json \
+              --image-id "$IMAGE" --boot-volume-size-in-gbs 50 --subnet-id "$SUBNET" --assign-public-ip true \
+              --hostname-label minecraft --ssh-authorized-keys-file ssh_key.pub --user-data-file cloud-init.yaml 2>&1)
+            if [ $? -eq 0 ]; then
+              echo "Attempt $n: LAUNCHED"; continue
+            fi
+            if echo "$out" | grep -qE 'Out of host capacity|"status": 500|TooManyRequests|"status": 429'; then
+              echo "$(date -u +%H:%M) attempt $n: no capacity"
+            else
+              echo "Attempt $n: unexpected error"; echo "$out" | grep -E '"code"|"status"'
+              exit 1
+            fi
+            sleep $((150 + RANDOM % 60))
+          done
+          echo "Time slot finished; the next scheduled run continues."
+      - name: Notify by email
+        if: steps.hunt.outputs.done == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOPIC: ${{ secrets.OCI_TOPIC }}
+        run: |
+          oci ons message publish --topic-id "$TOPIC" --title "Instancia A1 creada en Oracle" \
+            --body "La VM minecraft-a1 ya existe. Vuelve a la sesion de Claude y escribe 'sigue'." >/dev/null 2>&1 || true
+          gh issue create --title "Instancia A1 creada en Oracle" \
+            --body "La VM minecraft-a1 ya existe. Vuelve a la sesion de Claude y escribe 'sigue'. Este repositorio se borra en 1 minuto." || true
+          sleep 60
+      - name: Delete this repository
+        if: steps.hunt.outputs.done == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.REPO_DELETE_TOKEN }}
+        run: gh repo delete "${{ github.repository }}" --yes
