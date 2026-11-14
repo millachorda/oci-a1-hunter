@@ -2,7 +2,7 @@ name: hunt-a1
 
 # Retries creating an Oracle Always Free A1 VM every ~3 minutes, around the clock.
 # Each run loops for up to ~5h45m; an hourly schedule queues the next run so there are no gaps.
-# On success: notifies by email (issue + OCI Notifications) and deletes this whole repository.
+# On success: notifies by email (issue + OCI Notifications). The repo is deleted by hand afterwards.
 on:
   schedule:
     - cron: "17 * * * *"
@@ -101,10 +101,4 @@ jobs:
           oci ons message publish --topic-id "$TOPIC" --title "Instancia A1 creada en Oracle" \
             --body "La VM minecraft-a1 ya existe. Vuelve a la sesion de Claude y escribe 'sigue'." >/dev/null 2>&1 || true
           gh issue create --title "Instancia A1 creada en Oracle" \
-            --body "La VM minecraft-a1 ya existe. Vuelve a la sesion de Claude y escribe 'sigue'. Este repositorio se borra en 1 minuto." || true
-          sleep 60
-      - name: Delete this repository
-        if: steps.hunt.outputs.done == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.REPO_DELETE_TOKEN }}
-        run: gh repo delete "${{ github.repository }}" --yes
+            --body "La VM minecraft-a1 ya existe. Vuelve a la sesion de Claude y escribe 'sigue'." || true
