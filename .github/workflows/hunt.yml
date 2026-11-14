@@ -63,6 +63,7 @@ jobs:
           SUBNET: ${{ secrets.OCI_SUBNET }}
           IMAGE: ${{ secrets.OCI_IMAGE }}
         run: |
+          set +e   # GitHub runs bash with -e; a failed launch (no capacity) must not abort the loop
           set -u
           echo '{"ocpus":2,"memoryInGBs":12}' > shape.json
           end=$(( $(date +%s) + 345*60 ))
