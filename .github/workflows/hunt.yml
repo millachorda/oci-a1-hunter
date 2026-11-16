@@ -10,6 +10,7 @@ on:
 
 permissions:
   issues: write
+  actions: write
   contents: read
 
 concurrency:
@@ -102,3 +103,8 @@ jobs:
             --body "La VM minecraft-a1 ya existe. Vuelve a la sesion de Claude y escribe 'sigue'." >/dev/null 2>&1 || true
           gh issue create --title "Instancia A1 creada en Oracle" \
             --body "La VM minecraft-a1 ya existe. Vuelve a la sesion de Claude y escribe 'sigue'." || true
+      - name: Queue the next run (no gaps if the schedule is late)
+        if: steps.hunt.outputs.done != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run hunt.yml --repo "${{ github.repository }}" --ref main
